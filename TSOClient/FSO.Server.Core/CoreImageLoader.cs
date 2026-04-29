@@ -4,6 +4,10 @@ using FSO.Server.Database.DA.Avatars;
 using FSO.Vitaboy;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
+using SixLabors.ImageSharp.Processing;
+using SixLabors.ImageSharp.Processing.Transforms;
+using SixLabors.ImageSharp.Processing.Transforms.Resamplers;
+using SixLabors.Primitives;
 using System;
 using System.IO;
 
@@ -28,9 +32,17 @@ namespace FSO.Server.Core
 
                 var dir = Path.Combine(nfsDir, "Avatars/" + avatar.avatar_id.ToString("x8"));
                 Directory.CreateDirectory(dir);
-                var image = Image.LoadPixelData<Bgra32>(bitmap.Data, bitmap.Width, bitmap.Height);
-                using (var fs = File.Open(Path.Combine(dir, "thumb.png"), FileMode.Create))
-                    image.SaveAsPng(fs);
+                using (var image = Image.LoadPixelData<Bgra32>(bitmap.Data, bitmap.Width, bitmap.Height))
+                {
+                    image.Mutate(x => x.Resize(new ResizeOptions
+                    {
+                        Size = new Size(512, 512),
+                        Mode = ResizeMode.Max,
+                        Sampler = KnownResamplers.NearestNeighbor
+                    }));
+                    using (var fs = File.Open(Path.Combine(dir, "head.png"), FileMode.Create))
+                        image.SaveAsPng(fs);
+                }
             }
             catch { }
         }
@@ -43,14 +55,22 @@ namespace FSO.Server.Core
                 var obj = content.WorldObjects.Get(guid);
                 if (obj == null) return;
                 var objd = obj.OBJ;
-                var bmp = obj.Resource.Get<BMP>((ushort)objd.CatalogStringsID);
+                var bmp = obj.Resource.Get<BMP>(objd.ThumbnailGraphic);
                 if (bmp == null || bmp.data == null || bmp.data.Length == 0) return;
 
                 var dir = Path.Combine(nfsDir, "Objects/" + guid.ToString("x8"));
                 Directory.CreateDirectory(dir);
                 using (var img = Image.Load(new MemoryStream(bmp.data)))
-                using (var fs = File.Open(Path.Combine(dir, "thumb.png"), FileMode.Create))
-                    img.SaveAsPng(fs);
+                {
+                    img.Mutate(x => x.Resize(new ResizeOptions
+                    {
+                        Size = new Size(1024, 1024),
+                        Mode = ResizeMode.Max,
+                        Sampler = KnownResamplers.NearestNeighbor
+                    }));
+                    using (var fs = File.Open(Path.Combine(dir, "thumb.png"), FileMode.Create))
+                        img.SaveAsPng(fs);
+                }
             }
             catch { }
         }
