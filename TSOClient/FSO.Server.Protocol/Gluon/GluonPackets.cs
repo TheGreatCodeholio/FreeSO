@@ -22,7 +22,9 @@ namespace FSO.Server.Protocol.Gluon
             typeof(MatchmakerNotify),
             typeof(CityNotify),
             typeof(TuningChanged),
-            typeof(SendCityMail)
+            typeof(SendCityMail),
+            typeof(LotChatNotify),
+            typeof(InjectLotChatPacket)
         };
 
         static GluonPackets()

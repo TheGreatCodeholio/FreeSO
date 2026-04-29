@@ -686,9 +686,10 @@ namespace FSO.LotView
             if (HasInit == false) { return; }
 
             FrameCounter++;
-            if (FrameCounter < LastCacheClear + 60*60)
+            if (FrameCounter > LastCacheClear + 60*60)
             {
                 State._2D.ClearTextureCache();
+                LastCacheClear = FrameCounter;
             }
             if (!UseBackbuffer)
                 InternalDraw(device);
@@ -955,6 +956,11 @@ namespace FSO.LotView
         {
             State._2D.Begin(this.State.Camera2D);
             return Platform.GetLotThumb(gd, State, rooflessCallback);
+        }
+
+        public Texture2D GetAvatarThumb(AvatarComponent avatarComp, GraphicsDevice gd)
+        {
+            return Platform.GetAvatarThumb(avatarComp, gd);
         }
 
         public void ChangeAAMode(GraphicsDevice gd)

@@ -1,6 +1,7 @@
-﻿using Mina.Core.Buffer;
+﻿using System;
 using System.ComponentModel;
 using FSO.Common.Serialization;
+using Mina.Core.Buffer;
 
 namespace FSO.Server.Protocol.Voltron.Packets
 {
@@ -38,6 +39,8 @@ namespace FSO.Server.Protocol.Voltron.Packets
             this.RequestTypeID = input.GetUInt32();
 
             var bodySize = input.GetUInt32();
+            if (bodySize > 10 * 1024 * 1024)
+                throw new Exception("DataServiceWrapperPDU body too large: " + bodySize);
             var bodyBytes = new byte[bodySize];
             input.Get(bodyBytes, 0, (int)bodySize);
             this.Body = bodyBytes;

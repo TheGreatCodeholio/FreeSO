@@ -189,6 +189,45 @@ namespace FSO.SimAntics.NetPlay.Model.Commands
                             vm.SignalChatEvent(new VMChatEvent(null, VMChatEventType.Debug, e.Message));
                         }
                         break;
+                    case "maxmotives":
+                        var maxMotiveList = new VMMotive[]
+                        {
+                            VMMotive.Energy, VMMotive.Comfort, VMMotive.Hunger,
+                            VMMotive.Hygiene, VMMotive.Bladder, VMMotive.Fun, VMMotive.Social
+                        };
+                        // Only real player avatars are eligible — NPCs (PersistID == 0) and pets
+                        // are always excluded because touching their motives breaks service lot AI.
+                        var allPlayers = vm.Context.ObjectQueries.Avatars
+                            .OfType<VMAvatar>()
+                            .Where(x => x.PersistID > 0 && !x.IsPet)
+                            .ToList();
+                        var motiveTarget = args.Trim();
+                        if (motiveTarget == "" || motiveTarget.ToLowerInvariant() == "all")
+                        {
+                            foreach (var p in allPlayers)
+                                foreach (var m in maxMotiveList)
+                                    p.SetMotiveData(m, vm.TuningCache.GetLimit(m));
+                            vm.SignalChatEvent(new VMChatEvent(null, VMChatEventType.Generic,
+                                "Filled motives for " + allPlayers.Count + " player(s)."));
+                        }
+                        else
+                        {
+                            var target = allPlayers.FirstOrDefault(
+                                x => x.Name.ToLowerInvariant().Trim() == motiveTarget.ToLowerInvariant());
+                            if (target != null)
+                            {
+                                foreach (var m in maxMotiveList)
+                                    target.SetMotiveData(m, vm.TuningCache.GetLimit(m));
+                                vm.SignalChatEvent(new VMChatEvent(null, VMChatEventType.Generic,
+                                    "Filled motives for " + target.Name + "."));
+                            }
+                            else
+                            {
+                                vm.SignalChatEvent(new VMChatEvent(null, VMChatEventType.Generic,
+                                    "Player '" + motiveTarget + "' not found on lot."));
+                            }
+                        }
+                        break;
                 }
                 return true;
             }

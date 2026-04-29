@@ -23,6 +23,7 @@ namespace FSO.SimAntics.Model.TSOPlatform
         public HashSet<uint> Roommates = new HashSet<uint>();
         public HashSet<uint> BuildRoommates = new HashSet<uint>();
         public int ObjectLimit;
+        public int ObjectLimitBonus; // extra objects per roommate purchased via upgrades; not persisted in marshal (DB authoritative)
         public override bool LimitExceeded { get; set; }
 
         public VMTSOJobUI JobUI;
@@ -96,6 +97,10 @@ namespace FSO.SimAntics.Model.TSOPlatform
             {
                 NhoodID = reader.ReadUInt32();
             }
+            if (Version > 38)
+            {
+                ObjectLimitBonus = reader.ReadInt32();
+            }
         }
 
         public override void SerializeInto(BinaryWriter writer)
@@ -122,6 +127,7 @@ namespace FSO.SimAntics.Model.TSOPlatform
                 channel.SerializeInto(writer);
             }
             writer.Write(NhoodID);
+            writer.Write(ObjectLimitBonus);
         }
 
         public override bool CanPlaceNewUserObject(VM vm)
@@ -191,6 +197,16 @@ namespace FSO.SimAntics.Model.TSOPlatform
             Description = "Default Channel",
             TextColor = Color.White,
             Flags = VMTSOChatChannelFlags.ShowByDefault
+        };
+
+        public static VMTSOChatChannel CityChannel = new VMTSOChatChannel()
+        {
+            ID = 255,
+            ViewPermMin = VMTSOAvatarPermissions.Visitor,
+            SendPermMin = VMTSOAvatarPermissions.Visitor,
+            Name = "City",
+            Description = "City-wide Chat",
+            TextColor = new Color(152, 251, 152)
         };
 
         public VMTSOChatChannel Clone()

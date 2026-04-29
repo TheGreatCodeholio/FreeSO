@@ -249,8 +249,8 @@ namespace FSO.Server.Servers.Lot.Domain
                     Directory.CreateDirectory(Path.Combine(Config.SimNFS, "Objects/" + objStr + "/"));
                     Directory.CreateDirectory(Path.Combine(Config.SimNFS, "Objects/" + objStr + "/Plugin"));
 
-                    var file = File.Open(Path.Combine(Config.SimNFS, "Objects/" + objStr + "/Plugin/" + pluginID.ToString("x8") + ".dat"), FileMode.Create);
-                    file.WriteAsync(data, 0, data.Length).ContinueWith(x => file.Close());
+                    using (var file = File.Open(Path.Combine(Config.SimNFS, "Objects/" + objStr + "/Plugin/" + pluginID.ToString("x8") + ".dat"), FileMode.Create))
+                        file.Write(data, 0, data.Length);
                 } catch (Exception e)
                 {
                     //todo: specific types of exception that can be thrown here? instead of just catching em all
@@ -432,31 +432,15 @@ namespace FSO.Server.Servers.Lot.Domain
                     state.SerializeInto(writer);
                     data = stream.ToArray();
                 }
-                var file = File.Open(Path.Combine(Config.SimNFS, "Objects/" + objStr + "/inventoryState.fsoo"), FileMode.Create);
-
-                if (runSync)
-                {
+                using (var file = File.Open(Path.Combine(Config.SimNFS, "Objects/" + objStr + "/inventoryState.fsoo"), FileMode.Create))
                     file.Write(data, 0, data.Length);
-                    using (var db = DAFactory.Get())
-                    {
-                        //todo: race where inventory object could potentially be placed on the lot before the old instance of it is deleted
-                        //probably just block objects with same persist id from being placed.
-                        db.Objects.UpdatePersistState(objectPID, dbState);
-                        callback(true, objectPID);
-                    }
-                    file.Close();
-                }
-                else
+
+                using (var db = DAFactory.Get())
                 {
-                    file.WriteAsync(data, 0, data.Length).ContinueWith((x) =>
-                    {
-                        using (var db = DAFactory.Get())
-                        {
-                            db.Objects.UpdatePersistState(objectPID, dbState);
-                            callback(true, objectPID);
-                        }
-                        file.Close();
-                    });
+                    //todo: race where inventory object could potentially be placed on the lot before the old instance of it is deleted
+                    //probably just block objects with same persist id from being placed.
+                    db.Objects.UpdatePersistState(objectPID, dbState);
+                    callback(true, objectPID);
                 }
             }
             catch (Exception e)
@@ -724,6 +708,18 @@ namespace FSO.Server.Servers.Lot.Domain
         public void SetSpotlightStatus(VM vm, bool on)
         {
             Host.SetSpotlight(on);
+        }
+
+        public void SetObjectLimitBonus(VM vm, int bonus)
+        {
+            var lotId = Context.DbId;
+            Host.InBackground(() =>
+            {
+                using (var db = DAFactory.Get())
+                {
+                    db.Lots.UpdateObjectLimitBonus(lotId, bonus);
+                }
+            });
         }
 
         public void StockOutfit(VM vm, VMGLOutfit outfit, VMAsyncStockOutfitCallback callback)
@@ -1289,6 +1285,23 @@ namespace FSO.Server.Servers.Lot.Domain
                     callback(db.Avatars.Get(avatarID)?.user_id ?? 0);
                 }
             });
+        }
+
+        public void BroadcastChatToCity(string avatarName, string message, byte channelId, string lotName)
+        {
+            var packet = new LotChatNotify
+            {
+                LotId = (uint)Context.DbId,
+                LotName = lotName ?? "",
+                AvatarName = avatarName ?? "",
+                Message = message ?? "",
+                ChannelId = channelId
+            };
+            try
+            {
+                City.GetByShardId(Context.ShardId)?.Write(packet);
+            }
+            catch { }
         }
     }
 }

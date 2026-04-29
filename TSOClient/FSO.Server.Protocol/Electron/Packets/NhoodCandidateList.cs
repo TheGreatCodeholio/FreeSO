@@ -1,6 +1,7 @@
-﻿using FSO.Common.Serialization;
-using Mina.Core.Buffer;
+﻿using System;
 using System.Collections.Generic;
+using FSO.Common.Serialization;
+using Mina.Core.Buffer;
 
 namespace FSO.Server.Protocol.Electron.Packets
 {
@@ -13,6 +14,8 @@ namespace FSO.Server.Protocol.Electron.Packets
         {
             NominationMode = input.GetBool();
             int candCount = input.GetInt32();
+            if (candCount < 0 || candCount > 1000)
+                throw new Exception("NhoodCandidateList count out of range: " + candCount);
 
             Candidates = new List<NhoodCandidate>();
             for (int i=0; i<candCount; i++)

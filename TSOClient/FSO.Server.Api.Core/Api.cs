@@ -3,6 +3,7 @@ using FSO.Server.Api.Core.Utils;
 using FSO.Server.Common;
 using FSO.Server.Common.Config;
 using FSO.Server.Database.DA;
+using FSO.Server.Database.DA.Avatars;
 using FSO.Server.Domain;
 using FSO.Server.Servers.Api.JsonWebToken;
 using Microsoft.AspNetCore.Http;
@@ -25,10 +26,25 @@ namespace FSO.Server.Api.Core
         public IUpdateUploader UpdateUploader;
         public IUpdateUploader AddonUploader;
         public GithubConfig Github;
+        public ChatBroadcast ChatBroadcast;
+        public InjectBroadcast InjectBroadcast;
+        public GlobalChatInjectBroadcast GlobalChatInjectBroadcast;
+        // Wired by FSO.Server.Core to generate a thumb.png from game content when none exists yet.
+        public Action<DbAvatar, string> ThumbnailGenerator;
+        // Wired by FSO.Server.Core to generate Objects/{guid}/thumb.png from the IFF catalog BMP.
+        public Action<uint, string> ObjectThumbnailGenerator;
+        // Wired by FSO.Server.Core to return the full object catalog list.
+        public System.Func<System.Collections.Generic.IEnumerable<Controllers.JSONCatalogItem>> GetCatalogItems;
 
         public Api()
         {
             INSTANCE = this;
+            ChatBroadcast = new ChatBroadcast();
+            ChatBroadcast.Instance = ChatBroadcast;
+            InjectBroadcast = new InjectBroadcast();
+            InjectBroadcast.Instance = InjectBroadcast;
+            GlobalChatInjectBroadcast = new GlobalChatInjectBroadcast();
+            GlobalChatInjectBroadcast.Instance = GlobalChatInjectBroadcast;
         }
 
         public void Init(NameValueCollection appSettings)

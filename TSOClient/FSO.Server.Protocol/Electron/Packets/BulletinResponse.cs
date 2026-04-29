@@ -1,8 +1,9 @@
-﻿using FSO.Common.Serialization;
+﻿using System;
+using System.IO;
+using FSO.Common.Serialization;
 using FSO.Files.Formats.tsodata;
 using FSO.Server.Protocol.Electron.Model;
 using Mina.Core.Buffer;
-using System.IO;
 
 namespace FSO.Server.Protocol.Electron.Packets
 {
@@ -20,10 +21,14 @@ namespace FSO.Server.Protocol.Electron.Packets
         {
             Type = input.GetEnum<BulletinResponseType>();
             var numMessages = input.GetInt32();
+            if (numMessages < 0 || numMessages > 1000)
+                throw new Exception("BulletinResponse message count out of range: " + numMessages);
             Messages = new BulletinItem[numMessages];
             for (int j = 0; j < numMessages; j++)
             {
                 var length = input.GetInt32();
+                if (length < 0 || length > 64 * 1024)
+                    throw new Exception("BulletinResponse message data too large: " + length);
                 var dat = new byte[length];
                 for (int i = 0; i < length; i++)
                 {

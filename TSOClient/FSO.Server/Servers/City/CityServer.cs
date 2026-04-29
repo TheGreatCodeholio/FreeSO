@@ -8,10 +8,12 @@ using FSO.Server.Framework;
 using FSO.Server.Framework.Aries;
 using FSO.Server.Framework.Voltron;
 using FSO.Server.Protocol.Aries.Packets;
+using FSO.Server.Protocol.Gluon.Packets;
 using FSO.Server.Protocol.Voltron.Packets;
 using FSO.Server.Servers.City.Domain;
 using FSO.Server.Servers.City.Handlers;
 using FSO.Server.Servers.Shared.Handlers;
+using Newtonsoft.Json;
 using Ninject;
 using NLog;
 using System;
@@ -28,6 +30,8 @@ namespace FSO.Server.Servers.City
         private ISessionGroup VoltronSessions;
         private CityLivenessEngine Liveness;
         public bool ShuttingDown;
+        private IDisposable _injectSubscription;
+        private IDisposable _globalChatInjectSubscription;
 
         public CityServer(CityServerConfiguration config, IKernel kernel) : base(config, kernel)
         {
@@ -43,6 +47,71 @@ namespace FSO.Server.Servers.City
             base.Start();
 
             Liveness.Start();
+            _SubscribeInjectBroadcast();
+            _SubscribeGlobalChatInject();
+        }
+
+        private void _SubscribeInjectBroadcast()
+        {
+            var hub = InjectBroadcast.Instance;
+            if (hub == null) return;
+
+            var daFactory = Kernel.Get<IDAFactory>();
+            var lotPicker = Kernel.Get<LotServerPicker>();
+
+            _injectSubscription = hub.Subscribe(json =>
+            {
+                try
+                {
+                    dynamic msg = JsonConvert.DeserializeObject<dynamic>(json);
+                    int lotId = (int)msg.lot_id;
+                    string avatarName = (string)msg.avatar_name ?? "";
+                    string message    = (string)msg.message    ?? "";
+
+                    string callSign;
+                    using (var db = daFactory.Get())
+                    {
+                        var claim = db.LotClaims.GetByLotID(lotId);
+                        if (claim == null) return;
+                        callSign = claim.owner;
+                    }
+
+                    var session = lotPicker.GetLotServerSession(callSign);
+                    session?.Write(new InjectLotChatPacket
+                    {
+                        LotId = (uint)lotId,
+                        AvatarName = avatarName,
+                        Message = message
+                    });
+                }
+                catch (Exception ex)
+                {
+                    LOG.Warn("Failed to route inject message: {0}", ex.Message);
+                }
+            });
+        }
+
+        private void _SubscribeGlobalChatInject()
+        {
+            var hub = GlobalChatInjectBroadcast.Instance;
+            if (hub == null) return;
+
+            _globalChatInjectSubscription = hub.Subscribe(json =>
+            {
+                try
+                {
+                    dynamic msg = JsonConvert.DeserializeObject<dynamic>(json);
+                    string avatarName = (string)msg.avatar_name ?? "";
+                    string message = (string)msg.message ?? "";
+
+                    var handler = Kernel.Get<GlobalChatHandler>();
+                    handler.BroadcastAndPublish(0, avatarName, message, 0xFFC8C8C8u);
+                }
+                catch (Exception ex)
+                {
+                    LOG.Warn("Failed to route global chat inject: {0}", ex.Message);
+                }
+            });
         }
 
         protected override void Bootstrap()
@@ -100,11 +169,13 @@ namespace FSO.Server.Servers.City
 
         public override void Shutdown()
         {
-            Shutdown(ShutdownType.SHUTDOWN).RunSynchronously();
+            Shutdown(ShutdownType.SHUTDOWN).GetAwaiter().GetResult();
         }
 
         public async Task<bool> Shutdown(ShutdownType type)
         {
+            _injectSubscription?.Dispose();
+            _injectSubscription = null;
             Liveness.Stop();
             ShuttingDown = true;
             var lotServers = Kernel.Get<LotServerPicker>();
@@ -254,8 +325,10 @@ namespace FSO.Server.Servers.City
                 typeof(AvatarRetireHandler),
                 typeof(MailHandler),
                 typeof(MatchmakerNotifyHandler),
+                typeof(LotChatNotifyHandler),
                 typeof(NhoodHandler),
-                typeof(BulletinHandler)
+                typeof(BulletinHandler),
+                typeof(GlobalChatHandler)
             };
         }
     }

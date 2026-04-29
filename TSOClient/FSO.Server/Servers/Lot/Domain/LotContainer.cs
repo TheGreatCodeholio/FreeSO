@@ -730,6 +730,7 @@ namespace FSO.Server.Servers.Lot.Domain
             Lot.TSOState.LotID = LotPersist.location;
             Lot.TSOState.SkillMode = LotPersist.skill_mode;
             Lot.TSOState.PropertyCategory = (byte)LotPersist.category;
+            Lot.TSOState.ObjectLimitBonus = LotPersist.object_limit_bonus;
             var isCommunity = LotPersist.category == LotCategory.community;
 
             if (isCommunity)
@@ -918,6 +919,17 @@ namespace FSO.Server.Servers.Lot.Domain
             if (evt.Type == VMChatEventType.Debug)
             {
                 LOG.Info("LOT " + Context.DbId + ": " + evt.Text[0]);
+            }
+
+            if (evt.Type == VMChatEventType.Message && evt.ChannelID != 7)
+            {
+                var channel = Lot?.TSOState?.ChatChannels?.FirstOrDefault(x => x.ID == evt.ChannelID);
+                if (channel == null || channel.ViewPermMin == VMTSOAvatarPermissions.Visitor)
+                {
+                    var avatarName = evt.Text != null && evt.Text.Length > 0 ? evt.Text[0] : "";
+                    var message = evt.Text != null && evt.Text.Length > 1 ? evt.Text[1] : "";
+                    VMGlobalLink.BroadcastChatToCity(avatarName, message, evt.ChannelID, LotPersist?.name ?? "");
+                }
             }
         }
 
@@ -1181,6 +1193,17 @@ namespace FSO.Server.Servers.Lot.Domain
                 });
             }
             evt.WaitOne();
+        }
+
+        public void InjectDiscordMessage(string avatarName, string message)
+        {
+            if (!ActiveYet) return;
+            var displayText = $"[Discord] {avatarName}: {message}";
+            lock (LotThreadActions)
+            {
+                LotThreadActions.Enqueue(() =>
+                    Lot.SignalChatEvent(new VMChatEvent(null, VMChatEventType.Generic, displayText)));
+            }
         }
 
         public bool IsAvatarOnLot(uint pid)

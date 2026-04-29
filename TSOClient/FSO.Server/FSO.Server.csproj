@@ -9,7 +9,7 @@
     <AppDesignerFolder>Properties</AppDesignerFolder>
     <RootNamespace>FSO.Server</RootNamespace>
     <AssemblyName>server</AssemblyName>
-    <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
+    <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
     <TargetFrameworkProfile />
@@ -187,6 +187,7 @@
     <Compile Include="DataService\Providers\ServerAvatarProvider.cs" />
     <Compile Include="DataService\Providers\ServerCityProvider.cs" />
     <Compile Include="DataService\Providers\ServerLotProvider.cs" />
+    <Compile Include="DataService\Providers\ThumbnailValidation.cs" />
     <Compile Include="DataService\Providers\ServerMayorRatingProvider.cs" />
     <Compile Include="DataService\Providers\ServerNeighborhoodProvider.cs" />
     <Compile Include="DataService\ServerDataService.cs" />
@@ -204,6 +205,8 @@
     <Compile Include="Servers\City\Handlers\BulletinHandler.cs" />
     <Compile Include="Servers\City\Handlers\NhoodHandler.cs" />
     <Compile Include="Servers\City\Handlers\MailHandler.cs" />
+    <Compile Include="Servers\City\Handlers\GlobalChatHandler.cs" />
+    <Compile Include="Servers\City\Handlers\LotChatNotifyHandler.cs" />
     <Compile Include="Servers\City\Handlers\MatchmakerNotifyHandler.cs" />
     <Compile Include="Servers\City\Handlers\ModerationHandler.cs" />
     <Compile Include="Servers\City\Handlers\AvatarRetireHandler.cs" />
@@ -257,6 +260,7 @@
     <Compile Include="Servers\Lot\Handlers\LotNegotiationHandler.cs" />
     <Compile Include="Servers\Lot\Domain\LotContainer.cs" />
     <Compile Include="Servers\Lot\Domain\LotContext.cs" />
+    <Compile Include="Servers\Lot\Handlers\LotChatInjectHandler.cs" />
     <Compile Include="Servers\Lot\Handlers\ShardShutdownHandler.cs" />
     <Compile Include="Servers\Lot\Handlers\VoltronConnectionLifecycleHandler.cs" />
     <Compile Include="Servers\Lot\Lifecycle\CityConnections.cs" />
