@@ -887,6 +887,24 @@ namespace FSO.Server.Servers.Lot.Domain
             });
         }
 
+        /// <summary>
+        /// Push a new SkillLocks pool size to a specific avatar IF they are on this
+        /// lot. No-op otherwise. Called by LotHost broadcasting to every hosted lot
+        /// after the API raises the avatar's skilllock_bonus — only the one lot the
+        /// avatar is on does anything; all others early-return on the persist lookup.
+        /// </summary>
+        public void UpdateAvatarSkillLockLimit(uint avatar_id, short new_limit)
+        {
+            if (Lot == null || JobLot) return;
+            var avatar = Lot.GetAvatarByPersist(avatar_id);
+            if (avatar == null) return; // not on this lot
+            Lot.ForwardCommand(new VMNetSetAvatarSkillLocksCmd()
+            {
+                PersistID = avatar_id,
+                NewLimit = new_limit
+            });
+        }
+
         private void ResyncTime()
         {
             var time = DateTime.UtcNow;
@@ -1419,7 +1437,11 @@ namespace FSO.Server.Servers.Lot.Domain
             var rage = (uint)((now - user.register_date) / ((long)60 * 60 * 24));
             var age = (uint)((now - avatar.date) / ((long)60 * 60 * 24));
 
-            state.SkillLock = (short)(20 + age / 7);
+            // Skill-lock pool = base (20) + age progression + portal-purchased bonus.
+            // Without the +skilllock_bonus the purchased upgrade only appears in the
+            // city-side Avatar_SkillsLockPoints model and is dropped on the floor every
+            // time the avatar joins a lot. Match the calc in ServerAvatarProvider.LazyLoad.
+            state.SkillLock = (short)(20 + age / 7 + (int)avatar.skilllock_bonus);
             state.SkillLockBody = (short)(avatar.lock_body*100);
             state.SkillLockCharisma = (short)(avatar.lock_charisma * 100);
             state.SkillLockCooking = (short)(avatar.lock_cooking * 100);
