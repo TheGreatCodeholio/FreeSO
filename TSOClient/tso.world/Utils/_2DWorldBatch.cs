@@ -97,6 +97,21 @@ namespace FSO.LotView.Utils
 
         private List<RenderTarget2D> Buffers = new List<RenderTarget2D>();
 
+        // Reusable scratch buffers for the large-batch RenderSpriteList path. Sized to the
+        // largest seen batch and reused across frames to avoid per-frame _2DSpriteVertex[]
+        // and short[] allocations (the dominant Gen-0 source on the 2D world draw path).
+        // Single-threaded use — this method only runs on the game thread.
+        private _2DSpriteVertex[] _scratchVerts;
+        private short[] _scratchIndices;
+
+        // Reusable scratch + pool for GroupByTexture. The result list and the lookup
+        // dictionary get cleared and reused each call; the pool recycles texture-group
+        // objects so we don't allocate one per (Pixel, Mask) tuple on every frame.
+        private List<_2DSpriteTextureGroup> _groupByTextureResult = new List<_2DSpriteTextureGroup>();
+        private Dictionary<PixelMaskTuple, _2DSpriteTextureGroup> _groupByTextureMap
+            = new Dictionary<PixelMaskTuple, _2DSpriteTextureGroup>();
+        private Stack<_2DSpriteTextureGroup> _textureGroupPool = new Stack<_2DSpriteTextureGroup>();
+
         public void SetScroll(Vector2 scroll)
         {
             Scroll = scroll;
@@ -518,28 +533,42 @@ namespace FSO.LotView.Utils
 
         private List<_2DSpriteTextureGroup> GroupByTexture(List<_2DSprite> sprites)
         {
-            var result = new List<_2DSpriteTextureGroup>();
-            var map = new Dictionary<PixelMaskTuple, _2DSpriteTextureGroup>();
+            // Reuse the result list, the lookup dictionary, and the texture-group objects
+            // themselves (pulled from a per-instance free-list). Caller is responsible for
+            // releasing the groups back to the pool via ReleaseTextureGroups when done.
+            _groupByTextureResult.Clear();
+            _groupByTextureMap.Clear();
 
             foreach (var sprite in sprites)
             {
                 var tuple = new PixelMaskTuple(sprite.Pixel, sprite.Mask);
                 _2DSpriteTextureGroup grouping;
-                
-                if (!map.TryGetValue(tuple, out grouping))
+
+                if (!_groupByTextureMap.TryGetValue(tuple, out grouping))
                 {
-                    grouping = new _2DSpriteTextureGroup
-                    {
-                        Pixel = sprite.Pixel,
-                        Depth = sprite.Depth,
-                        Mask = sprite.Mask
-                    };
-                    map.Add(tuple, grouping);
-                    result.Add(grouping);
+                    grouping = (_textureGroupPool.Count > 0) ? _textureGroupPool.Pop() : new _2DSpriteTextureGroup();
+                    grouping.Pixel = sprite.Pixel;
+                    grouping.Depth = sprite.Depth;
+                    grouping.Mask = sprite.Mask;
+                    grouping.Sprites.Clear();
+                    _groupByTextureMap.Add(tuple, grouping);
+                    _groupByTextureResult.Add(grouping);
                 }
                 grouping.Sprites.Add(sprite);
             }
-            return result;
+            return _groupByTextureResult;
+        }
+
+        private void ReleaseTextureGroups(List<_2DSpriteTextureGroup> groups)
+        {
+            // Drop texture references so the groups in the pool don't keep large textures
+            // alive longer than necessary; sprite list is cleared by GroupByTexture next use.
+            for (int i = 0; i < groups.Count; i++)
+            {
+                var g = groups[i];
+                g.Pixel = null; g.Depth = null; g.Mask = null;
+                _textureGroupPool.Push(g);
+            }
         }
 
         private Vector3 FrontDirForRot(WorldRotation rot)
@@ -577,29 +606,28 @@ namespace FSO.LotView.Utils
 
         public Rectangle GetSpriteListBounds()
         {
-            List<_2DSprite> all = new List<_2DSprite>();
-            for (var i=0; i<Sprites.Count; i++) {
-                for (int j = 0; j < Sprites[i].Sprites.Count; j++)
-                {
-                    List<_2DSprite> list = Sprites[i].Sprites.Values.ElementAt(j);
-                    all.AddRange(list);
-                }
-            }
-            return GetSpriteListBounds(all);
-        }
-
-        private Rectangle GetSpriteListBounds(List<_2DSprite> sprites)
-        {
+            // Walk the dictionary values directly with foreach. The previous implementation
+            // used `.Values.ElementAt(j)` inside an indexed loop — ElementAt on a
+            // Dictionary.ValueCollection is O(j), so the outer loop made the whole thing
+            // O(N²) in the number of texture groups. Also drops the temp List<_2DSprite>
+            // that copied every sprite reference just to compute bounds.
             int smallX = int.MaxValue;
             int smallY = int.MaxValue;
             int bigX = int.MinValue;
             int bigY = int.MinValue;
-            foreach (var sprite in sprites) {
-                var rect = sprite.AbsoluteDestRect;
-                if (rect.X < smallX) smallX = rect.X;
-                if (rect.Y < smallY) smallY = rect.Y;
-                if (rect.X + rect.Width > bigX) bigX = rect.X + rect.Width;
-                if (rect.Y + rect.Height > bigY) bigY = rect.Y + rect.Height;
+            for (var i = 0; i < Sprites.Count; i++)
+            {
+                foreach (var list in Sprites[i].Sprites.Values)
+                {
+                    foreach (var sprite in list)
+                    {
+                        var rect = sprite.AbsoluteDestRect;
+                        if (rect.X < smallX) smallX = rect.X;
+                        if (rect.Y < smallY) smallY = rect.Y;
+                        if (rect.X + rect.Width > bigX) bigX = rect.X + rect.Width;
+                        if (rect.Y + rect.Height > bigY) bigY = rect.Y + rect.Height;
+                    }
+                }
             }
             return new Rectangle(smallX, smallY, bigX - smallX, bigY - smallY);
         }
@@ -640,9 +668,40 @@ namespace FSO.LotView.Utils
                 var numSprites = group.Sprites.Count;
                 var texture = group.Pixel;
 
-                /** Build vertex data **/
-                var vertices = new _2DSpriteVertex[4 * numSprites];
-                var indices = new short[6 * numSprites];
+                // Decide upfront whether this batch will go to GPU buffers (large) or stay
+                // CPU-side as DrawUserIndexedPrimitives (small). Indices = 6 * numSprites,
+                // Primitives = indices/3 = 2 * numSprites; the legacy threshold was
+                // Primitives > 50 → numSprites > 25.
+                int vertexLen = 4 * numSprites;
+                int indexLen = 6 * numSprites;
+                int primitives = 2 * numSprites;
+                bool largeBatch = primitives > 50;
+
+                // Large batches: borrow grow-on-demand scratch buffers, build into them,
+                // upload to GPU buffers with explicit counts (so the slack past vertexLen/
+                // indexLen never reaches the GPU), then null the DrawGroup arrays so the
+                // scratch isn't pinned to the DrawGroup's lifetime.
+                // Small batches: keep allocating fresh arrays — they live on the DrawGroup
+                // until the cache flushes, and DrawUserIndexedPrimitives uses array.Length;
+                // sharing a scratch buffer there would require copy-trim or a count threaded
+                // through RenderDrawGroup. Not worth the touch radius.
+                _2DSpriteVertex[] vertices;
+                short[] indices;
+                if (largeBatch)
+                {
+                    if (_scratchVerts == null || _scratchVerts.Length < vertexLen)
+                        _scratchVerts = new _2DSpriteVertex[vertexLen];
+                    if (_scratchIndices == null || _scratchIndices.Length < indexLen)
+                        _scratchIndices = new short[indexLen];
+                    vertices = _scratchVerts;
+                    indices = _scratchIndices;
+                }
+                else
+                {
+                    vertices = new _2DSpriteVertex[vertexLen];
+                    indices = new short[indexLen];
+                }
+
                 var indexCount = 0;
                 var vertexCount = 0;
 
@@ -685,13 +744,14 @@ namespace FSO.LotView.Utils
                 VertexBuffer vb = null;
                 IndexBuffer ib = null;
 
-                var count = indices.Length / 3;
-                if (count > 50) //completely arbitrary number, but seems to keep things fast. dont gen if it isn't "worth it".
+                if (largeBatch)
                 {
-                    vb = new VertexBuffer(Device, typeof(_2DSpriteVertex), vertices.Length, BufferUsage.WriteOnly);
-                    vb.SetData(vertices);
-                    ib = new IndexBuffer(Device, IndexElementSize.SixteenBits, indices.Length, BufferUsage.WriteOnly);
-                    ib.SetData(indices);
+                    // Buffer sized to the actual data, not the scratch array's Length.
+                    vb = new VertexBuffer(Device, typeof(_2DSpriteVertex), vertexLen, BufferUsage.WriteOnly);
+                    vb.SetData(vertices, 0, vertexLen);
+                    ib = new IndexBuffer(Device, IndexElementSize.SixteenBits, indexLen, BufferUsage.WriteOnly);
+                    ib.SetData(indices, 0, indexLen);
+                    // Don't keep references on the DrawGroup — the next call reuses the scratch.
                     vertices = null;
                     indices = null;
                 }
@@ -706,7 +766,7 @@ namespace FSO.LotView.Utils
                     IndexBuf = ib,
                     Vertices = vertices,
                     Indices = indices,
-                    Primitives = count,
+                    Primitives = primitives,
                     Technique = technique,
                     Floors = floors
                 };
@@ -718,6 +778,9 @@ namespace FSO.LotView.Utils
                     dg.Dispose();
                 }
             }
+            // The texture groups are no longer referenced past this point — recycle them
+            // so the next GroupByTexture call can pop instead of new.
+            ReleaseTextureGroups(groupByTexture);
         }
 
         private Vector2 GetUV(Texture2D Texture, float x, float y)

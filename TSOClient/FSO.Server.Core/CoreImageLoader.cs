@@ -10,6 +10,7 @@ using SixLabors.ImageSharp.Processing;
 using SixLabors.ImageSharp.Processing.Transforms;
 using SixLabors.ImageSharp.Processing.Transforms.Resamplers;
 using SixLabors.Primitives;
+using NLog;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -19,6 +20,25 @@ namespace FSO.Server.Core
 {
     public class CoreImageLoader
     {
+        private static readonly Logger LOG = LogManager.GetCurrentClassLogger();
+
+        /// <summary>
+        /// Writes the destination file atomically: write to "<destPath>.tmp" first,
+        /// then rename over the destination. Prevents readers (the API) from seeing a
+        /// truncated file if the process dies mid-write.
+        /// </summary>
+        private static void AtomicWritePng(string destPath, Action<Stream> write)
+        {
+            var tempPath = destPath + ".tmp";
+            using (var fs = File.Open(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                write(fs);
+            // .NET Core 2.2 has no File.Move(src, dest, overwrite); fall back to Replace.
+            if (File.Exists(destPath))
+                File.Replace(tempPath, destPath, null);
+            else
+                File.Move(tempPath, destPath);
+        }
+
         public static void GenerateAvatarThumbnail(DbAvatar avatar, string nfsDir)
         {
             try
@@ -44,11 +64,13 @@ namespace FSO.Server.Core
                         Mode = ResizeMode.Max,
                         Sampler = KnownResamplers.NearestNeighbor
                     }));
-                    using (var fs = File.Open(Path.Combine(dir, "head.png"), FileMode.Create))
-                        image.SaveAsPng(fs);
+                    AtomicWritePng(Path.Combine(dir, "head.png"), fs => image.SaveAsPng(fs));
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                LOG.Warn(ex, "GenerateAvatarThumbnail failed for avatar_id={0}", avatar?.avatar_id);
+            }
         }
 
         public static void GenerateObjectThumbnail(uint guid, string nfsDir)
@@ -93,12 +115,14 @@ namespace FSO.Server.Core
                             Mode = ResizeMode.Max,
                             Sampler = KnownResamplers.Lanczos3
                         }));
-                        using (var fs = File.Open(thumbPath, FileMode.Create))
-                            img.SaveAsPng(fs);
+                        AtomicWritePng(thumbPath, fs => img.SaveAsPng(fs));
                     }
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                LOG.Warn(ex, "GenerateObjectThumbnail failed for guid=0x{0:X8}", guid);
+            }
         }
 
         // Tile descriptor used by the multi-tile compositor.
@@ -109,6 +133,34 @@ namespace FSO.Server.Core
             public int TileY;
             public int Level;
         }
+
+        // Per-zoom rendering geometry. Values mirror tso.world WorldState.WorldSpace.Invalidate
+        // and the OneUnitDistance / floor-stride math; see comments below for the source.
+        // Adding Medium/Far is a matter of constructing a new ZoomGeometry instance and using
+        // the matching DGRP zoom value (Far=1, Medium=2, Near=3).
+        private struct ZoomGeometry
+        {
+            public uint DgrpZoom;       // matches DGRP image Zoom field
+            public int AnchorX;         // CadgeWidth / 2
+            public int AnchorY;         // CadgeBaseLine
+            public int TileHalfW;       // TilePxWidth / 2
+            public int TileHalfH;       // TilePxHeight / 2
+            public float FloorPxHeight; // OneUnitDistance * cos(30°) * WorldUnitsPerTile
+        }
+
+        // Near zoom — what the in-game catalog uses. Sources from WorldSpace.Invalidate:
+        //   TilePxWidth=128, TilePxHeight=64, CadgeWidth=136, CadgeBaseLine=348
+        //   OneUnitDistance = sqrt(128^2 / 2) ≈ 90.51,  * cos(30°) ≈ 78.4
+        //   WorldUnitsPerTile = 3.0  →  per-floor stride ≈ 78.4 * 2.95 (game uses 2.95, not 3)
+        private static readonly ZoomGeometry NearZoom = new ZoomGeometry
+        {
+            DgrpZoom = 3,
+            AnchorX = 68,
+            AnchorY = 348,
+            TileHalfW = 64,
+            TileHalfH = 32,
+            FloorPxHeight = 78.4f * 2.95f,
+        };
 
         private static bool TryRenderDGRPGroup(GameObject obj, OBJD masterObjd, IffFile spriteIff, string dir, string thumbPath)
         {
@@ -153,19 +205,12 @@ namespace FSO.Server.Core
             //   BottomRight tile→screen formula, so we MUST use that same formula when
             //   placing each tile or multi-tile objects (beds, sofas) end up scrambled.
             const uint dgrpDirection = 0x10;
-            const uint dgrpZoom = 3;          // Near
-            const uint dgrpRotation = 0;      // already-rotated direction supplied directly
+            const uint dgrpRotation = 0;  // already-rotated direction supplied directly
 
-            // Near-zoom rendering constants from WorldSpace.Invalidate:
-            //   TilePxWidth = 128, TilePxHeight = 64 → halves 64, 32
-            //   CadgeWidth = 136 → anchorX = 68
-            //   CadgeBaseLine = 348 → anchorY
-            //   OneUnitDistance = sqrt(128^2 / 2) ≈ 90.51, * cos(30°) ≈ 78.4 px per Z unit
-            const int anchorX = 68;
-            const int anchorY = 348;
-            const int tileHalfW = 64;
-            const int tileHalfH = 32;
-            const float floorPxHeight = 78.4f * 2.95f; // pixels per LevelOffset step
+            // Per-zoom geometry constants extracted into NearZoom so they're named, sourced
+            // back to WorldSpace.Invalidate, and trivially swappable if we ever render
+            // catalog thumbs at a non-Near zoom.
+            var z = NearZoom;
             const int pad = 16;
 
             // Resolve every tile's DGRPImage and per-tile screen offset, then sort
@@ -173,19 +218,25 @@ namespace FSO.Server.Core
             var resolved = new List<(DGRPImage Image, int OffsetX, int OffsetY, int Depth)>();
             foreach (var t in tiles)
             {
-                var image = t.DGRP.GetImage(dgrpDirection, dgrpZoom, dgrpRotation);
+                var image = t.DGRP.GetImage(dgrpDirection, z.DgrpZoom, dgrpRotation);
                 if (image == null)
                     image = t.DGRP.Images?.FirstOrDefault(i => i.Sprites?.Length > 0);
                 if (image == null || image.Sprites == null || image.Sprites.Length == 0) continue;
 
                 // BottomRight isometric tile→screen + level offset.
-                int sx = (-t.TileX + t.TileY) * tileHalfW;
-                int sy = (-t.TileX - t.TileY) * tileHalfH - (int)(t.Level * floorPxHeight);
-                // Depth: lower-right (front) tiles have larger depth and must draw last.
-                // Higher levels also draw later (in front of lower floors).
-                int depth = (-t.TileX - t.TileY) * 1000 + t.Level * 10000;
-                // Negate so smaller "back" depth sorts first.
-                resolved.Add((image, sx, sy, -depth));
+                int sx = (-t.TileX + t.TileY) * z.TileHalfW;
+                int sy = (-t.TileX - t.TileY) * z.TileHalfH - (int)(t.Level * z.FloorPxHeight);
+                // Isometric back-to-front depth, sorted ASCENDING for the painter's
+                // algorithm:
+                //   - Within a floor: tiles with larger (TileX + TileY) are farther in
+                //     the BottomRight view (more negative sy on screen) → must draw
+                //     FIRST so closer tiles overpaint them. Subtract TileX+TileY so
+                //     "back" gets the smallest value.
+                //   - Across floors: higher Level draws on top of lower floors, so
+                //     larger Level = larger depth. Multiplier large enough that any
+                //     ground-floor tile sorts before any upper-floor tile.
+                int depth = t.Level * 10000 - (t.TileX + t.TileY) * 1000;
+                resolved.Add((image, sx, sy, depth));
             }
             if (resolved.Count == 0) return false;
             resolved.Sort((a, b) => a.Depth.CompareTo(b.Depth));
@@ -195,8 +246,8 @@ namespace FSO.Server.Core
             int maxX = int.MinValue, maxY = int.MinValue;
             foreach (var r in resolved)
             {
-                int tileAnchorX = anchorX + r.OffsetX;
-                int tileAnchorY = anchorY + r.OffsetY;
+                int tileAnchorX = z.AnchorX + r.OffsetX;
+                int tileAnchorY = z.AnchorY + r.OffsetY;
                 foreach (var spr in r.Image.Sprites)
                 {
                     var s2 = spriteIff.Get<SPR2>((ushort)spr.SpriteID);
@@ -222,8 +273,8 @@ namespace FSO.Server.Core
             // closer tiles overpaint farther ones (no Z-buffer in the CPU compositor).
             foreach (var r in resolved)
             {
-                int tileAnchorX = anchorX + r.OffsetX;
-                int tileAnchorY = anchorY + r.OffsetY;
+                int tileAnchorX = z.AnchorX + r.OffsetX;
+                int tileAnchorY = z.AnchorY + r.OffsetY;
                 foreach (var spr in r.Image.Sprites)
                 {
                     var s2 = spriteIff.Get<SPR2>((ushort)spr.SpriteID);
@@ -267,8 +318,7 @@ namespace FSO.Server.Core
                     Mode = ResizeMode.Max,
                     Sampler = KnownResamplers.Lanczos3
                 }));
-                using (var fs = File.Open(thumbPath, FileMode.Create))
-                    canvas.SaveAsPng(fs);
+                AtomicWritePng(thumbPath, fs => canvas.SaveAsPng(fs));
             }
             return true;
         }

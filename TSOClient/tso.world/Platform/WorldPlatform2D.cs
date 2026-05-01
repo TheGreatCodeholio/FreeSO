@@ -334,6 +334,20 @@ namespace FSO.LotView.Platform
 
         public Texture2D GetAvatarThumb(AvatarComponent avatarComp, GraphicsDevice gd)
         {
+            // Thread-safety contract: must be called on the game thread.
+            //
+            // We hold lock(Avatar.Bindings) inside DrawGeometry while iterating bindings,
+            // and each binding.Texture.Get(device) takes lock(textureRef). On the game
+            // thread, AbstractTextureRef.Get does direct Process(); off the game thread
+            // it does GameThread.NextUpdate(...).Result — which blocks waiting for the
+            // game thread to drain its callback queue. If the game thread is parked
+            // waiting for a different lock we hold, that's a hard deadlock (broken only
+            // by NextUpdate's 5s timeout). Fail fast on misuse so the bug is obvious.
+            if (!GameThread.IsInGameThread())
+                throw new InvalidOperationException(
+                    "WorldPlatform2D.GetAvatarThumb must be called on the game thread; "
+                    + "marshal via GameThread.NextUpdate first.");
+
             // The avatar mesh is 3D Vitaboy geometry drawn with AvatarEffect regardless of
             // whether the world platform is 2D or 3D. Render two views into a single
             // 400×1000 target: isometric body in the top 400×600 region, front-facing head
@@ -344,13 +358,11 @@ namespace FSO.LotView.Platform
             const int bodyW = 400, bodyH = 600, headSquare = 400;
             const int totalH = bodyH + headSquare; // 1000
             if (AvatarThumbTarget == null)
-                AvatarThumbTarget = new RenderTarget2D(gd, bodyW, totalH, false, SurfaceFormat.Color, DepthFormat.Depth24Stencil8);
+                AvatarThumbTarget = new RenderTarget2D(gd, bodyW, totalH, false, SurfaceFormat.Color, DepthFormat.Depth24Stencil8, 0, RenderTargetUsage.PreserveContents);
 
             var headBone = avatarComp.Avatar.Skeleton.GetBone("HEAD");
             float headY = headBone != null ? headBone.AbsolutePosition.Y : 3f;
 
-            var oldRts = gd.GetRenderTargets();
-            var oldVp = gd.Viewport;
             var oldBlend = gd.BlendState;
             var oldDepth = gd.DepthStencilState;
             var oldRaster = gd.RasterizerState;
@@ -404,8 +416,12 @@ namespace FSO.LotView.Platform
                 avatarComp.Avatar.DrawGeometry(gd, effect);
             }
 
-            gd.Viewport = oldVp;
-            gd.SetRenderTargets(oldRts);
+            // Unbind to the back buffer rather than restoring previously-bound RTs.
+            // Round-tripping via GetRenderTargets/SetRenderTargets has been observed to
+            // poison MonoGame's internal resolve-framebuffer dictionary and crash the
+            // next frame's lightmap pass with KeyNotFoundException. The frame that draws
+            // after us will rebind whatever it needs anyway.
+            gd.SetRenderTarget(null);
             gd.BlendState = oldBlend;
             gd.DepthStencilState = oldDepth;
             gd.RasterizerState = oldRaster;

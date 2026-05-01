@@ -355,6 +355,14 @@ namespace FSO.LotView.Platform
 
         public Texture2D GetAvatarThumb(AvatarComponent avatarComp, GraphicsDevice gd)
         {
+            // Thread-safety contract: must be called on the game thread.
+            // See WorldPlatform2D.GetAvatarThumb for the rationale (texref Get-from-non-game
+            // thread can deadlock against the lock(Bindings) that DrawGeometry holds).
+            if (!GameThread.IsInGameThread())
+                throw new InvalidOperationException(
+                    "WorldPlatform3D.GetAvatarThumb must be called on the game thread; "
+                    + "marshal via GameThread.NextUpdate first.");
+
             // Render two views into a single 400×1000 target: isometric body in the top
             // 400×600 region, front-facing head in the bottom 400×400 region. Server splits
             // the resulting PNG into body.png and head.png. One render target → one
@@ -364,13 +372,11 @@ namespace FSO.LotView.Platform
             const int bodyW = 400, bodyH = 600, headSquare = 400;
             const int totalH = bodyH + headSquare; // 1000
             if (AvatarThumbTarget == null)
-                AvatarThumbTarget = new RenderTarget2D(gd, bodyW, totalH, false, SurfaceFormat.Color, DepthFormat.Depth24Stencil8);
+                AvatarThumbTarget = new RenderTarget2D(gd, bodyW, totalH, false, SurfaceFormat.Color, DepthFormat.Depth24Stencil8, 0, RenderTargetUsage.PreserveContents);
 
             var headBone = avatarComp.Avatar.Skeleton.GetBone("HEAD");
             float headY = headBone != null ? headBone.AbsolutePosition.Y : 3f;
 
-            var oldRts = gd.GetRenderTargets();
-            var oldVp = gd.Viewport;
             var oldBlend = gd.BlendState;
             var oldDepth = gd.DepthStencilState;
             var oldRaster = gd.RasterizerState;
@@ -422,8 +428,12 @@ namespace FSO.LotView.Platform
                 avatarComp.Avatar.DrawGeometry(gd, effect);
             }
 
-            gd.Viewport = oldVp;
-            gd.SetRenderTargets(oldRts);
+            // Unbind to the back buffer rather than restoring previously-bound RTs.
+            // Round-tripping via GetRenderTargets/SetRenderTargets has been observed to
+            // poison MonoGame's internal resolve-framebuffer dictionary and crash the
+            // next frame's lightmap pass with KeyNotFoundException. The frame that draws
+            // after us will rebind whatever it needs anyway.
+            gd.SetRenderTarget(null);
             gd.BlendState = oldBlend;
             gd.DepthStencilState = oldDepth;
             gd.RasterizerState = oldRaster;
