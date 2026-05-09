@@ -7,6 +7,31 @@ namespace FSO.Server.Servers.City
         public int ID;
         public bool Timeout_No_Auth = true;
 
+        /// <summary>
+        /// Simoleons credited to a new avatar's budget when it's created
+        /// in this shard. Default 0 keeps the original FreeSO behavior
+        /// (start with nothing). Set in config.json under
+        /// services.cities[].starting_budget. Moderators always start
+        /// with 100000 — this only affects regular registrations.
+        /// </summary>
+        public int Starting_Budget = 0;
+
+        /// <summary>
+        /// If non-negative, only the first N unique user accounts
+        /// receive Starting_Budget; later registrations get 0. Each
+        /// account is also limited to claiming the starter exactly
+        /// once — only the user's first avatar on this shard gets the
+        /// money, additional avatars they create get nothing. -1
+        /// (default) = no cap (every new account's first avatar gets
+        /// starter cash, but additional avatars per-account still
+        /// only get it on the first one).
+        ///
+        /// Useful for a fresh shard where the early wave has no
+        /// established economy to tap into — give the founders enough
+        /// to build a lot, then turn it off as the economy gets going.
+        /// </summary>
+        public int Starting_Budget_Max_Count = -1;
+
         public CityServerNhoodConfiguration Neighborhoods = new CityServerNhoodConfiguration();
         public CityServerMaintenanceConfiguration Maintenance;
     }

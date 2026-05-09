@@ -94,6 +94,31 @@ namespace FSO.Client
         }
 
         /// <summary>
+        /// Boot directly into the city editor. Called instead of ShowLogin
+        /// when CityEditorHook.IsActive — i.e. when FSO.CityEditor.exe was
+        /// the launcher rather than FSO.exe.
+        ///
+        /// Initialize is called AFTER AddScreen on purpose (mirrors
+        /// EnterSandboxMode): the renderer's camera reads UIScreen.Current
+        /// to compute its projection, so the screen has to be current first.
+        /// </summary>
+        public void ShowCityEditor()
+        {
+            // Guard against the LoadingScreen's CheckProgressTimer firing
+            // multiple times before its Clear() takes effect. Without this
+            // we get duplicate CityEditorScreen instances each adding their
+            // own Terrain to GameFacade.Scenes, all calling Clear(white) on
+            // top of each other → blank white render.
+            if (GameFacade.Screens.CurrentUIScreen is CityEditorScreen) return;
+
+            var screen = new CityEditorScreen();
+            GameFacade.Screens.RemoveCurrent();
+            GameFacade.Screens.AddScreen(screen);
+            screen.Initialize();
+            DiscordRpcEngine.SendFSOPresence("Editing a City");
+        }
+
+        /// <summary>
         /// Go to the person selection page
         /// </summary>
         public void ShowPersonSelection()

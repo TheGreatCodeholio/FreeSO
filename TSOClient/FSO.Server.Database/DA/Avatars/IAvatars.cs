@@ -18,6 +18,11 @@ namespace FSO.Server.Database.DA.Avatars
         IEnumerable<DbAvatar> All();
         IEnumerable<DbAvatar> All(int shard_id);
         PagedList<DbAvatar> AllByPage(int shard_id, int offset, int limit, string orderBy);
+        // Number of distinct user accounts that have at least one avatar
+        // on this shard. Used by the starter-budget cap so it counts
+        // unique players, not avatars (one user can have multiple sims
+        // and we only want to cap how many users got bootstrapped).
+        int CountUniqueUsersOnShard(int shard_id);
         List<uint> GetLivingInNhood(uint nhood_id);
         List<AvatarRating> GetPossibleCandidatesNhood(uint nhood_id);
 
@@ -29,6 +34,12 @@ namespace FSO.Server.Database.DA.Avatars
         DbSkillLockBonusPurchase PurchaseSkillLockBonus(uint avatar_id, uint target_bonus, int cost);
 
         int GetBudget(uint avatar_id);
+        // Unconditional system credit — adds amount to the avatar's
+        // budget. Used by milestone tasks (BirthdayGiftTask) and admin
+        // tools that don't have a debit-side account. Returns rows
+        // affected (1 on success, 0 if avatar_id missing). For
+        // peer-to-peer transfers use Transaction() instead.
+        int CreditBudget(uint avatar_id, int amount);
         DbTransactionResult Transaction(uint source_id, uint avatar_id, int amount, short reason);
         DbTransactionResult Transaction(uint source_id, uint avatar_id, int amount, short reason, Func<bool> transactionInject);
         DbTransactionResult TestTransaction(uint source_id, uint avatar_id, int amount, short reason);

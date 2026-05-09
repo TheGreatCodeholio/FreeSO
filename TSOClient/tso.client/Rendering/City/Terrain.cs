@@ -701,9 +701,14 @@ namespace FSO.Client.Rendering.City
             }
         }
 
-        private bool isLandBuildable(int x, int y) 
+        private bool isLandBuildable(int x, int y)
         {
-            return FindController<TerrainController>().IsPurchasable(x, y);
+            // No controller (e.g. CityEditorScreen) means we can't ask the
+            // realestate domain whether a tile is purchasable. Return false
+            // so DrawTileBorders simply skips drawing lot-edge highlights.
+            var ctrl = FindController<TerrainController>();
+            if (ctrl == null) return false;
+            return ctrl.IsPurchasable(x, y);
         }
 
         private void DrawSpotlights(float HB)
@@ -1131,15 +1136,24 @@ namespace FSO.Client.Rendering.City
                 }
             }
 
-            ((CoreGameScreen)GameFacade.Screens.CurrentUIScreen).ucp.UpdateZoomButton();
+            // CoreGameScreen owns the UCP; the city editor screen doesn't
+            // have one. Don't hard-cast — the cast would NRE on any
+            // non-CoreGameScreen surface (e.g. CityEditorScreen).
+            (GameFacade.Screens.CurrentUIScreen as CoreGameScreen)?.ucp.UpdateZoomButton();
         }
 
         private int ITime;
         public override void Update(UpdateState state)
         {
             ITime++;
-            if (!(GameFacade.Screens.CurrentUIScreen is CoreGameScreen)) return;
-            CoreGameScreen CurrentUIScr = (CoreGameScreen)GameFacade.Screens.CurrentUIScreen;
+            // Gate kept the painter / camera from updating on any non-gameplay
+            // screen. Allow CityEditorScreen too — without Camera.Update the
+            // camera's m_WheelZoom stays at 0, ZisoScale = sqrt(0.5)/(288*0) =
+            // infinity, IsoScale = NaN, projection is degenerate, geometry
+            // renders to nowhere. CurrentUIScr was dead (unreferenced in the
+            // rest of the method); removed.
+            var current = GameFacade.Screens.CurrentUIScreen;
+            if (!(current is CoreGameScreen) && !(current is CityEditorScreen)) return;
 
             if (Visible)
             { //if we're not visible, do not update CityRenderer state...
@@ -1176,7 +1190,12 @@ namespace FSO.Client.Rendering.City
 
                 if (HandleMouse && state.ProcessMouseEvents)
                 {
-                    if (Camera.Zoomed == TerrainZoomMode.Near)
+                    // Allow tile-hover and TileMouseDown forwarding in Far
+                    // view too when a Plugin (e.g. MapPainterPlugin) is
+                    // active. Without a plugin, Far-view click means
+                    // "zoom into a lot" so we keep the original gate.
+                    if (Camera.Zoomed == TerrainZoomMode.Near ||
+                        (Camera.Zoomed == TerrainZoomMode.Far && Plugin != null))
                     {
                         var currentTile = GetHoverSquare(null);
                         var curTileInt = (currentTile == null) ? new int[] { -1, -1 } : new int[] { (int)currentTile.Value.X, (int)currentTile.Value.Y};
