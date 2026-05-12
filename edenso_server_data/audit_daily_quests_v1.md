@@ -38,11 +38,13 @@ API read        ─►  GET /userapi/quests/today            ─►  read-only
 
 | Aspect | Verdict |
 |---|---|
-| Hook site | `Avatars.CreditBudgetAndRecord` — called only from BirthdayGiftTask in v1 |
-| Coverage | **Weak** — most player income (job rewards, peer transfers, refunds) flows through `Avatars.Transaction`, NOT `CreditBudget`. EARN quest will rarely complete via normal gameplay in v1. |
-| Exploit | **None** — birthday gift award is one-shot per milestone per avatar, gated by `fso_events.GenericAvaTryParticipate`. Not repeatable. |
-| Acceptable for v1? | Yes — broken-but-safe is preferable to broken-and-exploitable. EARN completion is rare in v1; document and ship. |
-| Phase 1.5+ fix | Hook `Avatars.Transaction` for `source == uint.MaxValue` (system→player) flows with a filtered reason-code allow-list. Carefully exclude sell-back refunds (see BUY exploit below). |
+| Hook sites | `Avatars.CreditBudgetAndRecord` (milestone gifts) + `Avatars.Transaction` (all system→avatar credits, **phase 1.5**) |
+| Coverage | **Now broad.** Every system payout (SimAntics job rewards, bonus payouts, event prizes, lot refunds) bumps EARN progress. |
+| Filter on Transaction hook | `success && amount > 0 && source_id == uint.MaxValue && !dstObj` — system source only, avatar dest only. Peer transfers EXCLUDED. |
+| Why exclude peer transfers | Two players could ping money back and forth to clear each other's EARN quests with zero net cost. By excluding source=avatar, this exploit closes. |
+| Known leak | Object sell-back refunds also flow source=MAX → avatar, so they DO count toward EARN. Combined with the BUY cap (§500/purchase), the buy→sell→buy loop nets at most a few hundred simoleons advantage over normal play. Bounded daily by quest reward caps (EARN §5000 + BUY §3000 = §8000 total). |
+| Acceptable for v1.5? | Yes — covers normal gameplay, exploit value is small and time-expensive. |
+| Future improvement (phase 2+) | Net-spend tracking via VMNetDeleteObjectCmd hook to neutralize sell-back leak entirely. |
 
 ### VISIT — Visit N unique lots today
 
@@ -72,7 +74,48 @@ API read        ─►  GET /userapi/quests/today            ─►  read-only
 | Endpoint | Method | Auth | Reads / writes | Concern | Verdict |
 |---|---|---|---|---|---|
 | `/userapi/quests/today` | GET | none (v1) | read | leaks "what quests is avatar N doing today"? Not sensitive. | Safe. |
-| `/userapi/quests/claim/{slot}` | POST | none (v1) | writes: CreditBudget + MarkPaid | credits the **target** avatar (URL param), not the requester. Worst-case griefer pays a stranger their own daily reward early. **No value extraction.** | Safe in v1. |
+| `/userapi/quests/claim/{slot}` | POST | none (v1) | writes: MarkPaid + CreditBudget (in that order, atomic) | credits the **target** avatar (URL param), not the requester. Worst-case griefer pays a stranger their own daily reward early. **No value extraction.** | Safe. |
+
+### TOCTOU race fix on Claim (caught in phase 1.5 review)
+
+The first cut of the Claim endpoint was vulnerable to a classic
+time-of-check-to-time-of-use race:
+
+```
+T1: GET quest, paid_ts IS NULL → pass
+T2: GET quest, paid_ts IS NULL → pass    ← T2 reads before T1 marks
+T1: CreditBudget(+reward)
+T2: CreditBudget(+reward)                 ← DOUBLE CREDIT
+T1: MarkPaid (UPDATE … WHERE paid_ts IS NULL) → rows=1
+T2: MarkPaid → rows=0 but already credited
+```
+
+Two concurrent claims would both pass the in-memory `paid_ts.HasValue`
+check, both call `CreditBudget`, only one would successfully `MarkPaid`
+— but the second credit had already fired. Exploit value: up to
+`3 quests × max reward §5000 = §15,000` extra per day per script-capable
+player.
+
+**Fix applied:**
+
+1. `IDailyQuests.MarkPaid` now returns rows affected (`int` not `void`).
+2. Claim endpoint reorders to **MarkPaid first, CreditBudget only if
+   MarkPaid returned 1**. The MariaDB row lock during UPDATE serializes
+   concurrent calls; only the first observer of `paid_ts IS NULL`
+   succeeds, the others get `rows=0` and a `410 Gone` response.
+3. Same reorder applied in `RollDailyQuestsTask.Run` so the cron
+   payout pass and a user manually claiming can't double-credit each
+   other if they overlap on the same row.
+
+### Race / concurrency on the other write paths
+
+| Path | Race-safe? | How |
+|---|---|---|
+| `IncrementProgress` (action hooks) | Yes | Single-statement UPDATE with `LEAST(target, progress + delta)` and `WHERE completed_ts IS NULL`. MariaDB row lock serializes concurrent UPDATEs; increments accumulate correctly. |
+| `RecordAction` (log insert) | Yes | Append-only INSERT; PK auto-increment. No conflict possible. |
+| `RecordActionIdempotent` | Yes | ExistsToday + INSERT + UPDATE without an outer transaction. Two simultaneous first-time visits could each pass ExistsToday and double-insert. Mitigation: the action_log is purely audit; the side-effect (quest progress UPDATE) is bounded by `LEAST(target, progress + 1)`. Worst case: two log rows for one visit, one extra +1 quest progress. The quest still caps at target. Minor double-counting, no money extracted. Accept. |
+| Roll task vs another roll task | Yes | `GetAvatarsNeedingRoll` LEFT JOIN against today's quest rows. Only one tick will see them as missing; the other sees them as inserted. |
+| Transaction hook | Yes | Inline UPDATE inside the same connection as the transaction commit. MariaDB row lock again. |
 
 Real auth (cookie or token) lands in Phase 2 when the client gets a
 session-scoped ApiClient. Documented in the design doc.
@@ -103,12 +146,15 @@ input.
 
 1. **BUY per-purchase contribution cap** — `LotServerGlobalLink.RegisterNewObject` now records `min(price, 500)` toward BUY quest progress rather than the full price. Reduces sell-back cycle value: instead of 4 cycles to clear a §3800 target, an attacker needs ≥8 distinct purchases. Combined with sell-back depreciation, the exploit becomes time-expensive enough to deter most abuse. Full net-spend tracking is the proper fix; deferred (see BUY section above).
 
+2. **EARN hook on `Avatars.Transaction`** (phase 1.5) — bumps EARN progress when money flows from `uint.MaxValue` (the bank) to an avatar destination. Catches job rewards / bonuses / event prizes / lot refunds — i.e. genuinely earned simoleons via gameplay. Peer transfers (avatar → avatar) are deliberately excluded to prevent collusion farming.
+
 ## Known v1 limitations (deferred)
 
-1. EARN quest rarely completes via gameplay — only triggers on milestone gifts. Phase 1.5: hook `Avatars.Transaction` with a curated reason-code allow-list.
-2. SKILL quest type omitted from pool — needs live SimAntics → userApi pipe. Phase 1.5.
+1. ~~EARN quest rarely completes via gameplay — only triggers on milestone gifts.~~ **Fixed in phase 1.5** — Transaction hook now catches system→avatar credits.
+2. SKILL quest type omitted from pool — needs live SimAntics → userApi pipe. Phase 1.5+.
 3. API endpoints lack auth — accepted because exploit surface is null (claim credits target, not requester). Phase 2.
 4. Multi-account farming is possible for VISIT — same as any per-account daily-reward system. Accepted.
+5. Sell-back leak into EARN — buy/sell-back cycle bumps EARN slightly. Phase 2 fix: net-spend tracking via VMNetDeleteObjectCmd refund hook.
 
 ## Sign-off
 
