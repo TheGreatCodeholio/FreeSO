@@ -331,6 +331,36 @@ namespace FSO.Server.Servers.Lot.Domain
                     {
                         var id = db.Objects.Create(dbo);
                         if (callback != null) callback(objid, id);
+
+                        // Count toward the daily BUY quest, but only when:
+                        //   * this is a real owner-of-record (not unowned
+                        //     furniture or world objects), and
+                        //   * the object had a non-zero price (skip
+                        //     script-spawned freebies, EOD prizes, etc).
+                        // The actual debit already happened upstream in
+                        // VMNetBuyObjectCmd → PerformTransaction; here we
+                        // just record the spend after the object lands.
+                        // `owner` was nulled above when == 0, so HasValue is
+                        // sufficient. `dbo.value > 0` filters out zero-price
+                        // spawns.
+                        //
+                        // Per-purchase contribution cap of §500: a buy-sell-back
+                        // cycle would otherwise let a player clear the daily
+                        // §3800 BUY quest with ~4 cycles. With the cap, an
+                        // attacker needs ≥8 distinct purchases to complete BUY,
+                        // making the exploit tedious enough to deter abuse.
+                        // See edenso_server_data/audit_daily_quests_v1.md for
+                        // the full analysis + the deferred net-spend fix.
+                        if (owner.HasValue && dbo.value > 0)
+                        {
+                            const ulong BUY_PER_PURCHASE_CAP = 500UL;
+                            ulong contribution = System.Math.Min(dbo.value, BUY_PER_PURCHASE_CAP);
+                            db.ActionLog.RecordAction(
+                                owner.Value,
+                                FSO.Server.Database.DA.ActionLog.ActionType.CatalogBought,
+                                value: contribution,
+                                parameter: dbo.type);
+                        }
                     }
                 }
                 catch (Exception) { callback(objid, 0); }
