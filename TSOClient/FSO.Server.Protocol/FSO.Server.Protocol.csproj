@@ -144,6 +144,7 @@
     <Compile Include="Gluon\Model\ClaimType.cs" />
     <Compile Include="Gluon\Packets\AdvertiseCapacity.cs" />
     <Compile Include="Gluon\Packets\CityNotify.cs" />
+    <Compile Include="Gluon\Packets\FillAvatarMotives.cs" />
     <Compile Include="Gluon\Packets\InjectLotChatPacket.cs" />
     <Compile Include="Gluon\Packets\LotChatNotify.cs" />
     <Compile Include="Gluon\Packets\HealthPing.cs" />
